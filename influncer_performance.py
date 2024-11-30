@@ -4,18 +4,25 @@ import requests
 import os
 import hashlib
 import cv2
-import face_recognition
+from sklearn.metrics.pairwise import cosine_similarity
+
+# Haar Cascade for face detection
+FACE_CASCADE = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+
 
 def extract_faces_from_video(video_url, output_dir='faces', every_nth_frame=5):
-   
+    """
+    Download and process a video to extract all unique faces across all frames.
+    Returns a list of face encodings and the corresponding filenames.
+    """
     os.makedirs(output_dir, exist_ok=True)
     face_encodings = []
     face_filenames = []
+    log_errors = []
 
     try:
-        
         video_filename = os.path.join(output_dir, f"{hashlib.md5(video_url.encode()).hexdigest()}.mp4")
-        
+
         response = requests.get(video_url, stream=True)
         with open(video_filename, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
@@ -33,48 +40,50 @@ def extract_faces_from_video(video_url, output_dir='faces', every_nth_frame=5):
             if frame_count % every_nth_frame != 0:
                 continue
 
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            face_locations = face_recognition.face_locations(rgb_frame)
-            face_encs = face_recognition.face_encodings(rgb_frame, face_locations)
+            # Detected faces
+            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            face_locations = FACE_CASCADE.detectMultiScale(gray_frame, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
 
-            for i, face_enc in enumerate(face_encs):
+            for (x, y, w, h) in face_locations:
+                face = gray_frame[y:y+h, x:x+w]
+                
+                resized_face = cv2.resize(face, (64, 64))
+                face_encoding = resized_face.flatten()  # Flatten into a fixed-length vector
+
                 match = False
                 for known_enc in face_encodings:
-                    if face_recognition.compare_faces([known_enc], face_enc, tolerance=0.6)[0]:
+                    if cosine_similarity([known_enc], [face_encoding])[0][0] > 0.9:  # Similarity threshold
                         match = True
                         break
 
                 if not match:
-                    face_encodings.append(face_enc)
-                    face_filename = os.path.join(output_dir, f"{hashlib.md5(face_enc.tobytes()).hexdigest()}.jpg")
+                    # Saveing the face encoding and image
+                    face_encodings.append(face_encoding)
+                    face_filename = os.path.join(output_dir, f"{hashlib.md5(face_encoding.tobytes()).hexdigest()}.jpg")
                     face_filenames.append(face_filename)
-                    top, right, bottom, left = face_locations[i]
-                    cv2.imwrite(face_filename, frame[top:bottom, left:right])
+                    cv2.imwrite(face_filename, frame[y:y+h, x:x+w])
 
         cap.release()
 
     except Exception as e:
-        print(f"Error processing video {video_url}: {e}")
+        log_errors.append(f"Error processing video {video_url}: {e}")
 
-    return face_encodings, face_filenames
+    return face_encodings, face_filenames, log_errors
 
 
-def analyze_influencer_performance(csv_path, output_csv='influencer_performance.csv'):
-   
+def analyze_influencer_performance(csv_path, output_csv='influencer_performance.csv', output_log='error_log.txt'):
+    """
+    Identify unique influencers, calculate performance, and analyze engagement.
+    """
     df = pd.read_csv(csv_path)
-
-    # Extract unique video URLs and initialize data structures
     unique_videos = df['Video URL'].unique()
     influencer_data = {}
-    processed_videos = {}
+    error_log = []
 
     for video_url in unique_videos:
-        if video_url in processed_videos:
-            continue  # Skip repeated videos
-
         print(f"Processing video: {video_url}")
-
-        face_encodings, face_filenames = extract_faces_from_video(video_url)
+        face_encodings, face_filenames, log_errors = extract_faces_from_video(video_url)
+        error_log.extend(log_errors)
 
         if not face_encodings:
             print(f"No faces detected in video: {video_url}")
@@ -86,12 +95,13 @@ def analyze_influencer_performance(csv_path, output_csv='influencer_performance.
         for face_enc, face_filename in zip(face_encodings, face_filenames):
             match_found = False
             for influencer_id, data in influencer_data.items():
-                if face_recognition.compare_faces([data['face_encoding']], face_enc, tolerance=0.6)[0]:
-                    influencer_data[influencer_id]['video_count'] += 1
-                    influencer_data[influencer_id]['performance_scores'].append(avg_performance)
-                    influencer_data[influencer_id]['face_images'].append(face_filename)
-                    match_found = True
-                    break
+                if len(data['face_encoding']) == len(face_enc):
+                    if cosine_similarity([data['face_encoding']], [face_enc])[0][0] > 0.9:  # Match threshold
+                        influencer_data[influencer_id]['video_count'] += 1
+                        influencer_data[influencer_id]['performance_scores'].append(avg_performance)
+                        influencer_data[influencer_id]['face_images'].append(face_filename)
+                        match_found = True
+                        break
 
             if not match_found:
                 influencer_id = f"influencer_{len(influencer_data) + 1}"
@@ -116,18 +126,18 @@ def analyze_influencer_performance(csv_path, output_csv='influencer_performance.
         })
 
     influencer_df = pd.DataFrame(influencer_analysis)
-
     influencer_df = influencer_df.sort_values(by=['Average Performance', 'Performance Variance'], ascending=[False, True])
-
     influencer_df.to_csv(output_csv, index=False)
 
+    with open(output_log, 'w') as log_file:
+        log_file.write("\n".join(error_log))
+
     return influencer_df
-
-
-# Main execution
+# Main Execution
 if __name__ == "__main__":
     try:
-        results = analyze_influencer_performance('/content/Assignment Data - Sheet1 (1).csv')
+        input_csv = '/content/Assignment Data - Sheet1 (1).csv'
+        results = analyze_influencer_performance(input_csv)
         print("Influencer analysis completed. Results saved to 'influencer_performance.csv'")
         print(results)
     except Exception as e:
