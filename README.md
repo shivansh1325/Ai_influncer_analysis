@@ -1,4 +1,4 @@
-##README: Influencer Performance Analysis Assignment
+README: Influencer Performance Analysis Assignment
 Overview
 This repository contains all files and resources developed and used for the assignment "Influencer Performance Analysis." The task involves analyzing ~200 videos to identify unique influencers, extracting their faces, and calculating their performance metrics. The key deliverables include an HTML table, the core algorithm script, and the processed data file in CSV format.
 
